@@ -56,6 +56,7 @@ fi
 
 #use the original (non-grad-corrected) T1w image as the input, since dwi is not grad corrected at this stage either..
 t1=$t1_dir/t1.nii.gz
+t1_mask=$t1_dir/t1.mask.nii.gz 
 
 epireg_work=$out_dir/epi_reg
 mkdir -p $epireg_work
@@ -65,12 +66,22 @@ out_prefix=$epireg_work/b0_to_t1
 
 xfm_b0_t1=$out_prefix.mat
 
-#use reg_aladin instead, then convert to fsl transform -- more reliable for 7T, need to test for others..
-echo reg_aladin -rigOnly -flo $b0 -ref $t1 -res $epireg_work/b0_to_t1_aladin.nii.gz -aff $epireg_work/b0_to_t1_aladin.xfm
-reg_aladin -rigOnly -flo $b0 -ref $t1 -res $epireg_work/b0_to_t1_aladin.nii.gz -aff $epireg_work/b0_to_t1_aladin.xfm
-echo c3d_affine_tool $epireg_work/b0_to_t1_aladin.xfm  -ref $t1 -src $b0 -ras2fsl -o $xfm_b0_t1
-c3d_affine_tool $epireg_work/b0_to_t1_aladin.xfm  -ref $t1 -src $b0 -ras2fsl -o $xfm_b0_t1
+# JK - TLE Phase1/2 changes [Dec 2021]
+# Registration was poor from dwi to t1 (failing with previous steps)
 
+# Start by getting skull-stripped brains
+echo fslmaths $t1 -mul $t1_mask $epireg_work/t1.brain.nii.gz
+fslmaths $t1 -mul $t1_mask $epireg_work/t1.brain.nii.gz
+
+echo fslmaths $b0 -mul $dwi_dir/brainmask.nii.gz $epireg_work/b0.brain.nii.gz
+fslmaths $b0 -mul $dwi_dir/brainmask.nii.gz $epireg_work/b0.brain.nii.gz
+
+# Use ants to get transform from b0 to t1 (rigid only)
+echo antsIntermodalityIntrasubject.sh -d 3 -i $epireg_work/b0.brain.nii.gz -r $epireg_work/t1.brain.nii.gz -x $t1_mask -t 0 -o $epireg_work/b0_to_t1_
+antsIntermodalityIntrasubject.sh -d 3 -i $epireg_work/b0.brain.nii.gz -r $epireg_work/t1.brain.nii.gz -x $t1_mask -t 0 -o $epireg_work/b0_to_t1_
+
+
+# Create b0 in native space
 if [ -n "$resample_res" ]
 then
     diff_res=$resample_res 
@@ -78,37 +89,75 @@ else
     diff_res=`fslval $b0 pixdim1`
 fi
 
+# Generate reference in T1w space at native dwi resolution
 b0_t1_ref=$epireg_work/b0_t1space_diffres.nii.gz
 
-#generate reference at dwi resolution in t1 space
+# Get transform in usable form by fsl
+echo c3d_affine_tool -ref $t1 -src $b0 -itk $epireg_work/b0_to_t1_0GenericAffine.mat -ras2fsl -o $xfm_b0_t1
+c3d_affine_tool -ref $t1 -src $b0 -itk $epireg_work/b0_to_t1_0GenericAffine.mat -ras2fsl -o $xfm_b0_t1
+
 echo flirt -in $b0 -ref $t1 -applyisoxfm $diff_res -out $b0_t1_ref -init $xfm_b0_t1
 flirt -in $b0 -ref $t1 -applyisoxfm $diff_res -out $b0_t1_ref -init $xfm_b0_t1
+
+# Apply transform to full dwi volume 
+echo antsApplyTransforms -d 3 -i $dwi_vol -e 3 -r $b0_t1_ref -n Linear -t $epireg_work/b0_to_t1_0GenericAffine.mat -o $out_dir/dwi.nii.gz 
+antsApplyTransforms -d 3 -i $dwi_vol -e 3 -r $b0_t1_ref -n Linear -t $epireg_work/b0_to_t1_0GenericAffine.mat -o $out_dir/dwi.nii.gz 
+
+# #use reg_aladin instead, then convert to fsl transform -- more reliable for 7T, need to test for others..
+# echo reg_aladin -rigOnly -flo $b0 -ref $t1 -res $epireg_work/b0_to_t1_aladin.nii.gz -aff $epireg_work/b0_to_t1_aladin.xfm
+# reg_aladin -rigOnly -flo $b0 -ref $t1 -res $epireg_work/b0_to_t1_aladin.nii.gz -aff $epireg_work/b0_to_t1_aladin.xfm
+# echo c3d_affine_tool $epireg_work/b0_to_t1_aladin.xfm  -ref $t1 -src $b0 -ras2fsl -o $xfm_b0_t1
+# c3d_affine_tool $epireg_work/b0_to_t1_aladin.xfm  -ref $t1 -src $b0 -ras2fsl -o $xfm_b0_t1
+
+# if [ -n "$resample_res" ]
+# then
+#     diff_res=$resample_res 
+# else
+#     diff_res=`fslval $b0 pixdim1`
+# fi
+
+# b0_t1_ref=$epireg_work/b0_t1space_diffres.nii.gz
+
+#generate reference at dwi resolution in t1 space
+# echo flirt -in $b0 -ref $t1 -applyisoxfm $diff_res -out $b0_t1_ref -init $xfm_b0_t1
+# flirt -in $b0 -ref $t1 -applyisoxfm $diff_res -out $b0_t1_ref -init $xfm_b0_t1
 
 #rotate bvec
 echo rotate_bvecs $dwi_bvec $xfm_b0_t1 $out_dir/dwi.bvec
 rotate_bvecs $dwi_bvec $xfm_b0_t1 $out_dir/dwi.bvec
+
+#rotate bvec ants
+# echo rotate_bvecs_ants $epireg_work/b0_to_t1_0GenericAffine.mat $dwi_bvec $out_dir/dwi.bvec
+# python $HOME/opt/git/prepdwi/bin/rotate_bvecs_ants $epireg_work/b0_to_t1_0GenericAffine.mat $dwi_bvec $out_dir/dwi.bvec
 
 #copy bval
 echo cp $dwi_bval $out_dir/dwi.bval
 cp $dwi_bval $out_dir/dwi.bval
 
 
- #resample dwi to t1 space 
- echo flirt -in $dwi_vol -ref $b0_t1_ref -applyxfm -init $xfm_b0_t1 -interp spline -out $out_dir/dwi.nii.gz
- flirt -in $dwi_vol -ref $b0_t1_ref -applyxfm -init $xfm_b0_t1 -interp spline -out $out_dir/dwi.nii.gz
+#  #resample dwi to t1 space 
+#  echo flirt -in $dwi_vol -ref $b0_t1_ref -applyxfm -init $xfm_b0_t1 -interp spline -out $out_dir/dwi.nii.gz
+#  flirt -in $dwi_vol -ref $b0_t1_ref -applyxfm -init $xfm_b0_t1 -interp spline -out $out_dir/dwi.nii.gz
 
 #if custom_brainmask option was used (imported from T1 space), then use that instead of brainmask from previous dwi stage
 if [ "$custom_brainmask" = "1" ]
 then
 	t1_brain=$t1_dir/t1.brain.inorm.nii.gz
-	echo reg_resample -flo $t1_brain -ref $b0_t1_ref -res $out_dir/brainmask.nii.gz -NN 0
-	reg_resample -flo $t1_brain -ref $b0_t1_ref -res $out_dir/brainmask.nii.gz -NN 0
+	echo antsApplyTransforms -d 3 -i $t1_brain -r $b0_t1_ref -n NearestNeighbor -t identity -o $out_dir/brainmask.nii.gz 
+ 	antsApplyTransforms -d 3 -i $t1_brain -r $b0_t1_ref -n NearestNeighbor -t identity -o $out_dir/brainmask.nii.gz 
+
+	# echo reg_resample -flo $t1_brain -ref $b0_t1_ref -res $out_dir/brainmask.nii.gz -NN 0
+	# reg_resample -flo $t1_brain -ref $b0_t1_ref -res $out_dir/brainmask.nii.gz -NN 0
 	echo fslmaths $out_dir/brainmask.nii.gz -bin $out_dir/brainmask.nii.gz
 	fslmaths $out_dir/brainmask.nii.gz -bin $out_dir/brainmask.nii.gz
 else
+ echo antsApplyTransforms -d 3 -i $brain_mask -r $b0_t1_ref -n NearestNeighbor -t $epireg_work/b0_to_t1_0GenericAffine.mat -o $out_dir/brainmask.nii.gz 
+ antsApplyTransforms -d 3 -i $brain_mask -r $b0_t1_ref -n NearestNeighbor -t $epireg_work/b0_to_t1_0GenericAffine.mat -o $out_dir/brainmask.nii.gz 
 
- echo flirt -in $brain_mask -ref $b0_t1_ref -applyxfm -init $xfm_b0_t1 -interp nearestneighbour -out $out_dir/brainmask.nii.gz
- flirt -in $brain_mask -ref $b0_t1_ref -applyxfm -init $xfm_b0_t1 -interp nearestneighbour -out $out_dir/brainmask.nii.gz
+#  echo reg_resample -flo $brain_mask -ref $epireg_work/b0_to_t1_anatomical.nii.gz -res $out_dir/brainmask.nii.gz -NN 0
+#  reg_resample -flo $brain_mask -ref $epireg_work/b0_to_t1_anatomical.nii.gz -res $out_dir/brainmask.nii.gz -NN 0
+#  echo flirt -in $brain_mask -ref $epireg_work/b0_to_t1_anatomical.nii.gz -applyxfm -init $xfm_b0_t1 -interp nearestneighbour -out $out_dir/brainmask.nii.gz
+#  flirt -in $brain_mask -ref $epireg_work/b0_to_t1_anatomical.nii.gz -applyxfm -init $xfm_b0_t1 -interp nearestneighbour -out $out_dir/brainmask.nii.gz
 
 fi
 

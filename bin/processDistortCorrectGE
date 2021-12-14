@@ -1,0 +1,116 @@
+#!/bin/bash
+
+#dependencies: fsl (dc, fslmerge)
+# Script has been editted to work with GE single-shot EPI images
+# Using T1map instead of T1 to have non-zero background 
+
+if [ "$#" -lt 2 ]
+then
+ echo "Writes output to dwi/<in>_dc"
+ echo "Usage $0 <in_uncorrected> <subjid/list>"
+ exit 0
+fi
+
+output_dir=`pwd`
+
+in_uncorrected=$1
+out_dc=${in_uncorrected}_dc
+shift 1
+
+if [ -f $1 ]
+then
+ subjids=`cat $1`
+else
+ subjids=$1
+fi
+
+
+for subj in $subjids
+do
+
+
+
+subj_dir=$output_dir/$subj
+
+
+uncorr_dir=$subj_dir/dwi/${in_uncorrected}
+dc_dir=$subj_dir/dwi/${out_dc}
+
+
+work=$dc_dir/work
+
+mkdir -p $dc_dir $work
+
+#req'd images: dwi
+in_dwi=$uncorr_dir/dwi.nii.gz
+in_mask=$uncorr_dir/brainmask.nii.gz
+in_bval=$uncorr_dir/dwi.bval
+in_bvec=$uncorr_dir/dwi.bvec
+avg_b0=$work/dwi_avgb0.nii.gz 
+
+
+t1=$subj_dir/t1/t1map.brain.nii.gz 
+t1_mask=$subj_dir/t1/t1map.brain_mask.nii.gz
+
+# Create avg b0
+echo dwiextract -fslgrad $in_bvec $in_bval $in_dwi - -bzero | mrmath - mean $avg_b0 -axis 3
+dwiextract -fslgrad $in_bvec $in_bval $in_dwi - -bzero | mrmath - mean $avg_b0 -axis 3
+
+# Use bet for masking - dwi2mask does poor job masking here
+echo bet $avg_b0 $work/dwi_avgb0_brain.nii.gz -m 
+bet $avg_b0 $work/dwi_avgb0_brain.nii.gz -m 
+
+# t1_to_dti=$work/t1_to_b0_rigid.nii.gz
+t1_to_dti=$work/t1_to_Warped.nii.gz
+xfm_t1_to_dti=$work/t1_to_dti.xfm
+
+#first rigidly register TO t1; anisotropic voxels caused some weird distortions if registering other way (replace with ANTs - JK [Dec 2021])
+echo antsRegistrationSyNQuick.sh -d 3 -m $work/dwi_avgb0_brain.nii.gz -f $t1 -t r -o $work/b0_rigidto_t1_
+antsRegistrationSyNQuick.sh -d 3 -m $work/dwi_avgb0_brain.nii.gz -f $t1 -t r -o $work/b0_rigidto_t1_
+
+# Apply necessary rotations from rigid xfm to bvec
+c3d_affine_tool -ref $t1 -src $work/dwi_avgb0_brain.nii.gz -itk $work/b0_rigidto_t1_0GenericAffine.mat -ras2fsl -o $work/b0_rigidto_t1_0GenericAffine.xfm
+echo rotate_bvecs $in_bvec $work/b0_rigidto_t1_0GenericAffine.xfm $work/dwi_rotated.bvec
+rotate_bvecs $in_bvec $work/b0_rigidto_t1_0GenericAffine.xfm $work/dwi_rotated.bvec
+
+# AntsApplyTransform to dwi mask and dwi
+echo antsApplyTransforms -d 3 -i $work/dwi_avgb0_brain_mask.nii.gz -r $work/b0_rigidto_t1_Warped.nii.gz -t $work/b0_rigidto_t1_0GenericAffine.mat -n NearestNeighbor -o $work/b0_rigidto_t1_brainmask.nii.gz
+antsApplyTransforms -d 3 -i $work/dwi_avgb0_brain_mask.nii.gz -r $work/b0_rigidto_t1_Warped.nii.gz -t $work/b0_rigidto_t1_0GenericAffine.mat -n NearestNeighbor -o $work/b0_rigidto_t1_brainmask.nii.gz
+
+# echo antsApplyTransforms -d 3 -e 3 -i $in_dwi -r $work/b0_rigidto_t1_Warped.nii.gz -t $work/b0_rigidto_t1_0GenericAffine.mat -o $work/dwi_rigidto_T1.nii.gz
+# antsApplyTransforms -d 3 -e 3 -i $in_dwi -r $work/b0_rigidto_t1_Warped.nii.gz -t $work/b0_rigidto_t1_0GenericAffine.mat -o $work/dwi_rigidto_T1.nii.gz
+
+out_dwi=$dc_dir/dwi.nii.gz
+out_mask=$dc_dir/brainmask.nii.gz
+out_bvec=$dc_dir/dwi.bvec
+out_bval=$dc_dir/dwi.bval
+
+# Perform deformable registration
+echo antsIntermodalityIntrasubject.sh -d 3 -r $t1 -x $t1_mask -i $work/b0_rigidto_t1_Warped.nii.gz -t 2 -o $work/b0_to_t1_
+antsIntermodalityIntrasubject.sh -d 3 -r $t1 -x $t1_mask -i $work/b0_rigidto_t1_Warped.nii.gz -t 2 -o $work/b0_to_t1_
+
+#warp DWI
+c3d_affine_tool -ref $t1 -src $work/b0_rigidto_t1_Warped.nii.gz -itk $work/b0_to_t1_0GenericAffine.mat -ras2fsl -o $work/b0_to_t1_0GenericAffine.xfm
+
+echo rotate_bvecs $work/dwi_rotated.bvec $work/b0_to_t1_0GenericAffine.xfm $out_bvec
+rotate_bvecs $work/dwi_rotated.bvec $work/b0_to_t1_0GenericAffine.xfm $out_bvec
+cp $in_bval $out_bval
+
+# echo antsApplyTransforms -d 3 -e 3 -i $work/dwi_rigidto_T1.nii.gz -r $work/b0_to_t1_anatomical.nii.gz -t $work/b0_to_t1_1Warp.nii.gz -t $work/b0_to_t1_0GenericAffine.mat -o $out_dwi
+# antsApplyTransforms -d 3 -e 3 -i $work/dwi_rigidto_T1.nii.gz -r $work/b0_to_t1_anatomical.nii.gz -t $work/b0_to_t1_1Warp.nii.gz -t $work/b0_to_t1_0GenericAffine.mat -o $out_dwi
+echo antsApplyTransforms -d 3 -e 3 -i $in_dwi -r $work/b0_to_t1_anatomical.nii.gz -t $work/b0_to_t1_1Warp.nii.gz -t $work/b0_to_t1_0GenericAffine.mat -t $work/b0_rigidto_t1_0GenericAffine.mat -o $out_dwi
+antsApplyTransforms -d 3 -e 3 -i $in_dwi -r $work/b0_to_t1_anatomical.nii.gz -t $work/b0_to_t1_1Warp.nii.gz -t $work/b0_to_t1_0GenericAffine.mat -t $work/b0_rigidto_t1_0GenericAffine.mat -o $out_dwi
+
+#warp brainmask
+echo antsApplyTransforms -d 3 -i $work/b0_rigidto_t1_brainmask.nii.gz -r $work/b0_to_t1_anatomical.nii.gz -t $work/b0_to_t1_1Warp.nii.gz -t $work/b0_to_t1_0GenericAffine.mat -n NearestNeighbor -o $out_mask
+antsApplyTransforms -d 3 -i $work/b0_rigidto_t1_brainmask.nii.gz -r $work/b0_to_t1_anatomical.nii.gz -t $work/b0_to_t1_1Warp.nii.gz -t $work/b0_to_t1_0GenericAffine.mat -n NearestNeighbor -o $out_mask
+
+echo dtifit -k $out_dwi -o $dc_dir/dti -m $out_mask  -r $out_bvec -b $out_bval
+dtifit -k $out_dwi -o $dc_dir/dti -m $out_mask -r $out_bvec -b $out_bval
+
+# Remove the rigidly transformed dwi due to large file size
+# rm $work/dwi_rigidto_T1.nii.gz
+
+done
+
+

@@ -48,9 +48,10 @@ brainmask=$eddy_dir/brainmask.nii.gz
 echo dwi2mask -fslgrad ${in_bvec} ${in_bval} ${in_dwi} $brainmask
 dwi2mask -fslgrad ${in_bvec} ${in_bval} ${in_dwi} $brainmask
 
+# Pointing octave to local path of functions
 petxt=$eddy_work/pedir.txt
-echo octave --eval "getDiffPhaseEncodeLine('${in_dwi}','$petxt')"
-octave --eval "getDiffPhaseEncodeLine('${in_dwi}','$petxt')"
+echo octave --eval "getDiffPhaseEncodeLine2('${in_dwi}','$petxt')"
+octave --path $HOME/opt/git/prepdwi/octave --eval "getDiffPhaseEncodeLine2('${in_dwi}','$petxt')"
 
 
 echo petxt: 

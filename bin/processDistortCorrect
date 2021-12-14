@@ -49,16 +49,21 @@ in_bvec=$uncorr_dir/dwi.bvec
 t1=$subj_dir/t1/t1.brain.inorm.nii.gz
 
 t1_inverted=$work/t1_inverted.nii.gz
+
+
 #preproc to invert intensities so it looks more like B0 T2w image
 echo fslmaths $t1 -add 1 -bin -div $t1 -mas $t1 $t1_inverted
 fslmaths $t1 -add 1 -bin -div $t1 -mas $t1 $t1_inverted
 
-t1_to_dti=$work/t1_to_b0_rigid.nii.gz
+# t1_to_dti=$work/t1_to_b0_rigid.nii.gz
+t1_to_dti=$work/t1_to_Warped.nii.gz
 xfm_t1_to_dti=$work/t1_to_dti.xfm
 
-#first rigidly register t1 to the b0
-echo reg_aladin -flo $t1_inverted -ref $in_b0 -res $t1_to_dti -aff $xfm_t1_to_dti -rigOnly
-reg_aladin -flo $t1_inverted -ref $in_b0 -res $t1_to_dti -aff $xfm_t1_to_dti -rigOnly
+#first rigidly register t1 to the b0 (replace with ANTs - JK [Dec 2021])
+# echo reg_aladin -flo $t1_inverted -ref $in_b0 -res $t1_to_dti -aff $xfm_t1_to_dti -rigOnly
+# reg_aladin -flo $t1_inverted -ref $in_b0 -res $t1_to_dti -aff $xfm_t1_to_dti -rigOnly
+echo antsRegistrationSyNQuick.sh -d 3 -f $in_b0 -m $t1_inverted -t r -o $work/t1_to_
+antsRegistrationSyNQuick.sh -d 3 -f $in_b0 -m $t1_inverted -t r -o $work/t1_to_
 
 deformed_b0=$work/b0_deformed_to_regT1.nii.gz
 b0_t1_cpp=$work/b0_to_regT1_cpp.nii.gz

@@ -1,4 +1,4 @@
-function getDiffPhaseEncodeLine (in_bids_nii,out_txt)
+function getDiffPhaseEncodeLine2 (in_bids_nii,out_txt)
 %octave
 %dependencies: jsonlab, load_nifti
 
@@ -22,6 +22,10 @@ switch json.PhaseEncodingDirection(1)
 end
 
 numPhaseEncodes=imsize(find(vec));
+
+if (ischar(json.EffectiveEchoSpacing) == 1)
+  json.EffectiveEchoSpacing = str2double(json.EffectiveEchoSpacing)
+endif 
 
 %check + or -
 if (length(json.PhaseEncodingDirection)==2)
